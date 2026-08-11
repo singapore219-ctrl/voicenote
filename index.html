@@ -245,6 +245,7 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
   <button id="btnSave">💾 저장</button>
   <button id="btnList">📂 지난 기록</button>
   <button id="btnInstall">📲 앱 설치</button>
+  <span class="hint" id="buildTag" title="이 값이 최신인지로 업데이트 반영 여부를 확인합니다"></span>
 </footer>
 
 <div class="mask" id="maskSet">
@@ -302,9 +303,10 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
     <h3>🩺 진단</h3>
     <p class="note">전사가 안 되는 원인을 찾습니다. <b>음성인식 테스트</b>를 누르고 마이크에 대고
       "하나 둘 셋 테스트"라고 말해 보세요. 결과를 복사해서 보내주시면 원인을 정확히 잡을 수 있습니다.</p>
-    <div style="display:flex; gap:8px; margin:14px 0">
-      <button class="primary" id="diagRun" style="flex:1">음성인식 10초 테스트</button>
+    <div style="display:flex; gap:8px; margin:14px 0; flex-wrap:wrap">
+      <button class="primary" id="diagRun" style="flex:1; min-width:180px">음성인식 10초 테스트</button>
       <button id="diagCopy">복사</button>
+      <button id="diagReset" title="옛 버전이 캐시에 남아 업데이트가 안 보일 때">🔄 최신 버전 받기</button>
     </div>
     <pre id="diagLog">아직 검사하지 않았습니다.</pre>
     <div style="display:flex;justify-content:flex-end;margin-top:14px"><button id="diagClose">닫기</button></div>
@@ -314,6 +316,9 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
 <div id="toast"></div>
 
 <script>
+/* 빌드 표시 — 화면에서 어느 버전이 도는지 바로 확인할 수 있게 */
+const BUILD = 'v3 · 2026-08-11 진단판';
+
 /* ═══════════ 상태 ═══════════ */
 const S = {
   recording:false, paused:false, segs:[], t0:0, acc:0,
@@ -799,6 +804,7 @@ $('setSave').onclick = ()=>{
 async function envReport(){
   const L=[];
   L.push('■ 환경');
+  L.push('  앱 버전  : '+BUILD);
   L.push('  주소     : '+location.href);
   L.push('  프로토콜 : '+location.protocol+(location.protocol==='https:'?' ✅':' ⚠ HTTPS가 아니면 마이크가 막힙니다'));
   L.push('  설치상태 : '+(matchMedia('(display-mode: standalone)').matches?'홈 화면 앱으로 실행 중':'브라우저 탭'));
@@ -828,6 +834,20 @@ async function openDiag(){
 $('btnDiag').onclick = openDiag;
 $('diagClose').onclick = ()=>$('maskDiag').classList.remove('on');
 $('diagCopy').onclick = ()=>{ navigator.clipboard.writeText($('diagLog').textContent); toast('진단 결과를 복사했습니다'); };
+
+/* 캐시에 옛 버전이 눌러붙었을 때 스스로 고치는 버튼 */
+$('diagReset').onclick = async ()=>{
+  if(S.segs.length && !confirm('화면의 전사 내용이 사라집니다. 계속할까요?')) return;
+  $('diagLog').textContent = '서비스워커 해제와 캐시 삭제 중…';
+  try{
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for(const r of regs) await r.unregister();
+    const ks = await caches.keys();
+    for(const k of ks) await caches.delete(k);
+    $('diagLog').textContent = '완료 — 최신 버전으로 다시 엽니다…';
+  }catch(e){ $('diagLog').textContent = '초기화 실패: '+e.message; }
+  location.replace(location.pathname + '?fresh=' + Math.floor(performance.now()));
+};
 
 $('diagRun').onclick = async ()=>{
   const btn=$('diagRun'); btn.disabled=true; btn.textContent='검사 중… 말해 보세요';
@@ -957,6 +977,7 @@ if(/iPad|iPhone|iPod/.test(navigator.userAgent) && !standalone)
   $('btnInstall').style.display='inline-block';
 
 /* ═══════════ 초기 안내 ═══════════ */
+$('buildTag').textContent = BUILD;
 if(!SR) $('sttState').textContent = '이 브라우저는 실시간 전사 미지원 (Chrome/Edge/Safari)';
 if(location.protocol === 'file:')
   $('sttState').textContent = '⚠ 파일로 직접 열면 인식이 안 됩니다 — 실행.bat 사용';
