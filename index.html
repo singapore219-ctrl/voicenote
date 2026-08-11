@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI 녹음노트 — 녹음·전사·요약</title>
+
+<!-- PWA(설치형 앱) -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#0f1115">
+<meta name="application-name" content="AI 녹음노트">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- iOS(아이패드) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="녹음노트">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<link rel="icon" href="./icons/favicon-32.png" sizes="32x32">
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+  --tx:#e8ecf3; --tx2:#98a2b3; --tx3:#6b7484;
+  --accent:#4f8cff; --accent2:#22c9a6; --warn:#ffb020; --danger:#ff5d5d;
+  --rad:12px;
+}
+@media (prefers-color-scheme: light){
+  :root{ --bg:#f5f7fa; --panel:#ffffff; --panel2:#f0f3f8; --line:#e2e7ef;
+         --tx:#1b2230; --tx2:#5b6675; --tx3:#8a94a4; }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--tx);
+  font-family:"Pretendard","Malgun Gothic","맑은 고딕",-apple-system,system-ui,sans-serif;
+  font-size:15px; line-height:1.6; display:flex; flex-direction:column;
+}
+button,select,input,textarea{font-family:inherit; font-size:14px}
+button{cursor:pointer; border:1px solid var(--line); background:var(--panel2); color:var(--tx);
+  padding:8px 14px; border-radius:10px; transition:.15s}
+button:hover:not(:disabled){border-color:var(--accent); color:var(--accent)}
+button:disabled{opacity:.4; cursor:not-allowed}
+button.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600}
+button.primary:hover{filter:brightness(1.1); color:#fff}
+button.danger{background:var(--danger); border-color:var(--danger); color:#fff; font-weight:600}
+button.danger:hover{filter:brightness(1.1); color:#fff}
+button.ghost{background:transparent}
+select,input[type=text],input[type=password]{background:var(--panel2); color:var(--tx);
+  border:1px solid var(--line); border-radius:10px; padding:8px 10px}
+
+/* ── header ── */
+header{display:flex; align-items:center; gap:14px; padding:12px 18px;
+  background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap}
+.brand{font-weight:800; font-size:17px; letter-spacing:-.3px; display:flex; align-items:center; gap:8px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--tx3)}
+.brand .dot.rec{background:var(--danger); animation:pulse 1.2s infinite}
+.brand .dot.pause{background:var(--warn)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+.timer{font-variant-numeric:tabular-nums; font-size:22px; font-weight:700; letter-spacing:.5px; min-width:104px}
+.meter{width:110px;height:8px;background:var(--panel2);border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+.meter i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .08s}
+.spacer{flex:1}
+.hint{font-size:12px;color:var(--tx3)}
+
+/* ── layout ── */
+main{flex:1; display:grid; grid-template-columns:1fr 420px; gap:14px; padding:14px; min-height:0}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:var(--rad);
+  display:flex; flex-direction:column; min-height:0; overflow:hidden}
+.card > h2{margin:0; padding:11px 14px; font-size:13px; font-weight:700; color:var(--tx2);
+  letter-spacing:.4px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px}
+.card > h2 .spacer{flex:1}
+.card .body{flex:1; overflow:auto; padding:12px 14px; min-height:0}
+
+/* ── 태블릿·모바일 ── */
+#viewSw{display:none; gap:6px}
+@media (max-width:960px){
+  main{grid-template-columns:1fr}
+  #viewSw{display:flex}
+  body.v-tx  #cardSum{display:none}
+  body.v-sum #cardTx{display:none}
+  header{padding:10px 12px; gap:10px}
+  footer{padding:8px 12px}
+  .timer{font-size:19px; min-width:88px}
+  .meter{display:none}
+  #title{flex:1; min-width:120px}
+}
+@media (pointer:coarse){
+  body{font-size:16px}
+  button{min-height:44px; padding:10px 15px}
+  .tab{min-height:34px}
+  .seg{padding:11px 8px}
+  .seg .t{min-width:52px; font-size:13px}
+  .seg .star{opacity:.35; font-size:19px; padding:0 8px}
+  select,input[type=text],input[type=password]{min-height:44px}
+}
+*{-webkit-tap-highlight-color:transparent}
+button,.tab,.seg .t,.seg .star,.chip{touch-action:manipulation}
+header{padding-top:max(12px, env(safe-area-inset-top))}
+footer{padding-bottom:max(10px, env(safe-area-inset-bottom))}
+main{padding-left:max(14px, env(safe-area-inset-left)); padding-right:max(14px, env(safe-area-inset-right))}
+#btnInstall{display:none; background:var(--accent2); border-color:var(--accent2); color:#04231c; font-weight:700}
+#btnInstall:hover{color:#04231c; filter:brightness(1.08)}
+
+/* ── transcript ── */
+.seg{display:flex; gap:10px; padding:7px 8px; border-radius:9px; align-items:flex-start}
+.seg:hover{background:var(--panel2)}
+.seg .t{font-variant-numeric:tabular-nums; font-size:12px; color:var(--tx3); padding-top:3px;
+  min-width:44px; cursor:pointer; user-select:none}
+.seg .t:hover{color:var(--accent)}
+.seg .x{flex:1; outline:none; white-space:pre-wrap; word-break:break-word}
+.seg .x:focus{background:var(--panel2); border-radius:6px; box-shadow:0 0 0 1px var(--accent)}
+.seg .star{opacity:.18; cursor:pointer; font-size:14px; user-select:none; padding:0 2px}
+.seg .star:hover{opacity:.7}
+.seg.marked{background:rgba(255,176,32,.10)}
+.seg.marked .star{opacity:1}
+.seg mark{background:var(--warn); color:#111; border-radius:3px}
+#interim{color:var(--tx3); font-style:italic; padding:7px 8px 7px 62px; min-height:1em}
+.empty{color:var(--tx3); text-align:center; padding:40px 20px; font-size:14px; line-height:2}
+
+/* ── summary ── */
+.tabs{display:flex; gap:6px}
+.tab{padding:5px 11px; border-radius:8px; font-size:12px; font-weight:700; border:1px solid var(--line);
+  background:transparent; color:var(--tx2)}
+.tab.on{background:var(--accent); border-color:var(--accent); color:#fff}
+.sum h3{margin:16px 0 7px; font-size:13px; color:var(--accent); letter-spacing:.3px}
+.sum h3:first-child{margin-top:0}
+.sum ul{margin:0; padding-left:19px}
+.sum li{margin:5px 0}
+.sum p{margin:6px 0}
+.chips{display:flex; flex-wrap:wrap; gap:6px}
+.chip{background:var(--panel2); border:1px solid var(--line); border-radius:20px;
+  padding:3px 11px; font-size:12px; color:var(--tx2)}
+.chip b{color:var(--accent); font-weight:700}
+.kv{display:flex; gap:8px; font-size:12px; color:var(--tx2); flex-wrap:wrap; margin-bottom:4px}
+.kv span{background:var(--panel2); border-radius:7px; padding:3px 9px}
+.badge{font-size:11px; padding:2px 7px; border-radius:6px; background:var(--panel2); color:var(--tx3)}
+
+/* ── footer ── */
+footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
+  border-top:1px solid var(--line); flex-wrap:wrap; align-items:center}
+
+/* ── modal ── */
+.mask{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+  align-items:center; justify-content:center; padding:20px; z-index:50}
+.mask.on{display:flex}
+.modal{background:var(--panel); border:1px solid var(--line); border-radius:14px;
+  width:min(560px,100%); max-height:86vh; overflow:auto; padding:20px}
+.modal h3{margin:0 0 4px; font-size:16px}
+.modal .row{margin:14px 0}
+.modal label{display:block; font-size:12px; color:var(--tx2); margin-bottom:5px; font-weight:600}
+.modal input,.modal select,.modal textarea{width:100%}
+.note{font-size:12px; color:var(--tx3); line-height:1.7}
+.sess{display:flex; align-items:center; gap:8px; padding:8px; border:1px solid var(--line);
+  border-radius:9px; margin-bottom:6px; font-size:13px}
+.sess .g{flex:1; cursor:pointer; min-width:0}
+.sess .g:hover{color:var(--accent)}
+.sess small{display:block; color:var(--tx3); font-size:11px}
+#toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px);
+  background:var(--tx); color:var(--bg); padding:10px 18px; border-radius:10px; font-size:13px;
+  font-weight:600; opacity:0; transition:.25s; pointer-events:none; z-index:99}
+#toast.on{opacity:1; transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="dot" id="dot"></span>AI 녹음노트</div>
+  <div class="timer" id="timer">00:00:00</div>
+  <div class="meter"><i id="meter"></i></div>
+  <button id="btnRec" class="primary">● 녹음 시작</button>
+  <button id="btnPause" disabled>❚❚ 일시정지</button>
+  <button id="btnStop" class="danger" disabled>■ 종료</button>
+  <select id="lang" title="인식 언어">
+    <option value="ko-KR">한국어</option>
+    <option value="en-US">English</option>
+    <option value="ja-JP">日本語</option>
+  </select>
+  <div class="tabs" id="viewSw">
+    <button class="tab on" data-view="tx">전사</button>
+    <button class="tab" data-view="sum">요약</button>
+  </div>
+  <div class="spacer"></div>
+  <span class="hint" id="sttState">대기 중</span>
+  <button class="ghost" id="btnSet">⚙ 설정</button>
+</header>
+
+<main>
+  <section class="card" id="cardTx">
+    <h2>실시간 전사
+      <span class="badge" id="segCount">0 문장</span>
+      <span class="spacer"></span>
+      <input type="text" id="find" placeholder="전사문 검색" style="padding:5px 9px;font-size:12px;width:150px">
+      <button class="ghost" id="btnClear" style="padding:5px 10px;font-size:12px">전체 지우기</button>
+    </h2>
+    <div class="body" id="segs">
+      <div class="empty" id="emptyMsg">
+        <b>녹음 시작</b>을 누르면 말하는 내용이 실시간으로 글로 적힙니다.<br>
+        시간(00:12)을 클릭하면 그 지점부터 다시 들을 수 있고,<br>
+        문장을 클릭해 직접 고칠 수 있습니다. ☆는 중요 표시입니다.
+      </div>
+    </div>
+    <audio id="player" controls style="display:none; width:100%; border-top:1px solid var(--line)"></audio>
+  </section>
+
+  <section class="card" id="cardSum">
+    <h2>요약
+      <span class="spacer"></span>
+      <div class="tabs">
+        <button class="tab on" data-tab="auto">자동 요약</button>
+        <button class="tab" data-tab="ai">AI 요약</button>
+      </div>
+    </h2>
+    <div class="body">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <button class="primary" id="btnSum" style="flex:1">요약 만들기</button>
+        <button class="ghost" id="btnCopySum">복사</button>
+      </div>
+      <div class="sum" id="sum">
+        <div class="empty">전사가 쌓이면 <b>요약 만들기</b>를 누르세요.<br>
+          자동 요약은 인터넷 없이 즉시 동작하고,<br>
+          AI 요약은 설정에서 Claude API 키를 넣으면 쓸 수 있습니다.</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <button id="btnMd">📄 회의록 저장 (.md)</button>
+  <button id="btnTxt">📝 전사문 저장 (.txt)</button>
+  <button id="btnAudio" disabled>🎧 오디오 저장</button>
+  <button id="btnCopyAll">복사</button>
+  <div class="spacer"></div>
+  <input type="text" id="title" placeholder="회의 제목" style="width:220px">
+  <button id="btnSave">💾 저장</button>
+  <button id="btnList">📂 지난 기록</button>
+  <button id="btnInstall">📲 앱 설치</button>
+</footer>
+
+<div class="mask" id="maskSet">
+  <div class="modal">
+    <h3>설정</h3>
+    <p class="note">AI 요약은 Anthropic Claude API를 직접 호출합니다. 키는 이 브라우저(localStorage)에만 저장되며 다른 곳으로 전송되지 않습니다.</p>
+    <div class="row">
+      <label>Claude API 키 (sk-ant-...)</label>
+      <input type="password" id="apiKey" placeholder="비워두면 자동 요약만 사용">
+    </div>
+    <div class="row">
+      <label>모델</label>
+      <select id="model">
+        <option value="claude-sonnet-5">Claude Sonnet 5 (권장 · 빠름)</option>
+        <option value="claude-opus-5">Claude Opus 5 (정밀)</option>
+        <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (저렴)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>AI 요약 지시문</label>
+      <textarea id="prompt" rows="6" style="background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:10px"></textarea>
+    </div>
+    <div class="row">
+      <label>문장 자동 나누기 간격(초) — 이 시간 이상 말이 끊기면 새 문단</label>
+      <input type="text" id="gap" style="width:100px">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="setClose">닫기</button>
+      <button class="primary" id="setSave">저장</button>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="maskList">
+  <div class="modal">
+    <h3>지난 기록</h3>
+    <p class="note">이 브라우저에 저장된 회의입니다. 오디오는 용량 문제로 저장되지 않고 전사문·요약만 보관됩니다.</p>
+    <div id="sessList" style="margin:14px 0"></div>
+    <div style="display:flex;justify-content:flex-end"><button id="listClose">닫기</button></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ═══════════ 상태 ═══════════ */
+const S = {
+  recording:false, paused:false, segs:[], t0:0, acc:0,
+  media:null, stream:null, chunks:[], blob:null, rec:null,
+  wantSTT:false, sttOn:false, restartTimer:null, lastFinal:0
+};
+const CFG = Object.assign({
+  key:'', model:'claude-sonnet-5', gap:'2.5',
+  prompt:`당신은 제조 현장 회의록 작성 전문가입니다. 아래는 회의 음성을 실시간 인식한 전사문이며 오탈자와 끊김이 있을 수 있습니다. 문맥으로 보정해서 읽고 다음 형식의 한국어 회의록을 마크다운으로 작성하세요.
+
+## 한 줄 요약
+## 핵심 논의 (3~6개 불릿, 각 불릿은 근거 수치·용어 포함)
+## 결정 사항 (없으면 "없음")
+## 실행 항목 (표: 항목 | 담당 | 기한)
+## 후속 확인 필요 (전사가 불명확해 확인이 필요한 부분)
+
+추측으로 사실을 만들지 말고, 전사문에 없는 내용은 쓰지 마세요.`
+}, JSON.parse(localStorage.getItem('vn_cfg')||'{}'));
+
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2,'0');
+const fmt = s => { s=Math.max(0,Math.floor(s)); return pad(s/3600|0)+':'+pad((s/60|0)%60)+':'+pad(s%60); };
+const mmss = s => { s=Math.max(0,Math.floor(s)); return pad(s/60|0)+':'+pad(s%60); };
+const esc = t => t.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function toast(m){ const t=$('toast'); t.textContent=m; t.classList.add('on'); clearTimeout(t._); t._=setTimeout(()=>t.classList.remove('on'),2200); }
+const elapsed = () => S.recording && !S.paused ? S.acc + (performance.now()-S.t0)/1000 : S.acc;
+
+/* ═══════════ 녹음 ═══════════ */
+async function startRec(){
+  try{
+    S.stream = await navigator.mediaDevices.getUserMedia({
+      audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true }
+    });
+  }catch(e){
+    toast('마이크를 사용할 수 없습니다: '+e.name); return;
+  }
+  // 오디오 파일 녹음
+  S.chunks=[];
+  let mime = ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(m=>MediaRecorder.isTypeSupported(m))||'';
+  S.media = new MediaRecorder(S.stream, mime?{mimeType:mime}:undefined);
+  S.media.ondataavailable = e => { if(e.data.size) S.chunks.push(e.data); };
+  S.media.onstop = () => {
+    S.blob = new Blob(S.chunks, {type:S.media.mimeType||'audio/webm'});
+    const url = URL.createObjectURL(S.blob);
+    const p = $('player'); p.src = url; p.style.display='block';
+    $('btnAudio').disabled = false;
+  };
+  S.media.start(1000);
+  // 볼륨 미터
+  meterStart(S.stream);
+  // 상태
+  S.recording=true; S.paused=false; S.acc=0; S.t0=performance.now(); S.lastFinal=0;
+  $('btnRec').disabled=true; $('btnPause').disabled=false; $('btnStop').disabled=false; $('lang').disabled=true;
+  $('dot').className='dot rec';
+  $('player').style.display='none'; $('btnAudio').disabled=true;
+  tick();
+  startSTT();
+  wakeOn();                       // 태블릿 화면 꺼짐 방지 (꺼지면 녹음·인식이 중단됨)
+  toast('녹음을 시작했습니다');
+}
+function pauseRec(){
+  if(!S.recording) return;
+  if(!S.paused){
+    S.paused=true; S.acc = elapsed(); try{S.media.pause()}catch(e){}
+    stopSTT(); $('dot').className='dot pause'; $('btnPause').textContent='▶ 이어서';
+    $('sttState').textContent='일시정지';
+  }else{
+    S.paused=false; S.t0=performance.now(); try{S.media.resume()}catch(e){}
+    startSTT(); $('dot').className='dot rec'; $('btnPause').textContent='❚❚ 일시정지';
+  }
+}
+function stopRec(){
+  if(!S.recording) return;
+  S.acc = elapsed(); S.recording=false; S.paused=false;
+  stopSTT(); meterStop(); wakeOff();
+  try{ S.media.stop() }catch(e){}
+  try{ S.stream.getTracks().forEach(t=>t.stop()) }catch(e){}
+  $('btnRec').disabled=false; $('btnPause').disabled=true; $('btnStop').disabled=true; $('lang').disabled=false;
+  $('btnPause').textContent='❚❚ 일시정지';
+  $('dot').className='dot'; $('sttState').textContent='종료됨';
+  $('interim') && ($('interim').textContent='');
+  toast('녹음을 마쳤습니다 — 요약 만들기를 눌러보세요');
+}
+function tick(){
+  $('timer').textContent = fmt(elapsed());
+  if(S.recording) requestAnimationFrame(tick);
+}
+
+/* 볼륨 미터 */
+let AC, ana, meterRAF;
+function meterStart(stream){
+  try{
+    AC = new (window.AudioContext||window.webkitAudioContext)();
+    const src = AC.createMediaStreamSource(stream);
+    ana = AC.createAnalyser(); ana.fftSize=512; src.connect(ana);
+    const buf = new Uint8Array(ana.frequencyBinCount);
+    (function loop(){
+      if(!ana) return;
+      ana.getByteTimeDomainData(buf);
+      let peak=0; for(let i=0;i<buf.length;i++){ const v=Math.abs(buf[i]-128); if(v>peak) peak=v; }
+      $('meter').style.width = Math.min(100, peak/60*100) + '%';
+      meterRAF = requestAnimationFrame(loop);
+    })();
+  }catch(e){}
+}
+function meterStop(){ cancelAnimationFrame(meterRAF); ana=null; $('meter').style.width='0%';
+  try{ AC && AC.close() }catch(e){} }
+
+/* ═══════════ 음성인식 ═══════════ */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function startSTT(){
+  if(!SR){ $('sttState').textContent='이 브라우저는 실시간 전사 미지원 (Chrome/Edge 사용)'; return; }
+  S.wantSTT = true;
+  if(S.sttOn) return;
+  const r = new SR();
+  r.lang = $('lang').value; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+  r.onstart = () => { S.sttOn=true; $('sttState').textContent='● 인식 중'; };
+  r.onresult = e => {
+    let interim='';
+    for(let i=e.resultIndex; i<e.results.length; i++){
+      const txt = e.results[i][0].transcript;
+      if(e.results[i].isFinal) addSeg(txt.trim());
+      else interim += txt;
+    }
+    setInterim(interim);
+  };
+  r.onerror = e => {
+    if(e.error==='not-allowed' || e.error==='service-not-allowed'){
+      S.wantSTT=false; $('sttState').textContent='마이크 권한 거부됨';
+    }else if(e.error==='network'){
+      $('sttState').textContent='네트워크 오류 — 인식 서버 접속 불가';
+    }
+  };
+  r.onend = () => {
+    S.sttOn=false;
+    if(S.wantSTT && S.recording && !S.paused){
+      clearTimeout(S.restartTimer);
+      S.restartTimer = setTimeout(()=>{ if(S.wantSTT) try{ r.start() }catch(e){ startSTT() } }, 250);
+      $('sttState').textContent='● 인식 중 (재연결)';
+    }else{
+      $('sttState').textContent = S.recording ? '일시정지' : '대기 중';
+    }
+  };
+  S.rec = r;
+  try{ r.start() }catch(e){}
+}
+function stopSTT(){
+  S.wantSTT=false; clearTimeout(S.restartTimer);
+  try{ S.rec && S.rec.stop() }catch(e){}
+  setInterim('');
+}
+function setInterim(t){
+  let el = $('interim');
+  if(!el){ el=document.createElement('div'); el.id='interim'; $('segs').appendChild(el); }
+  el.textContent = t;
+  if(t) el.scrollIntoView({block:'end'});
+}
+
+/* ═══════════ 전사 세그먼트 ═══════════ */
+function addSeg(text){
+  if(!text) return;
+  const now = elapsed();
+  const gap = parseFloat(CFG.gap)||2.5;
+  const last = S.segs[S.segs.length-1];
+  // 짧은 간격으로 이어진 발화는 같은 문단으로 합치기
+  if(last && (now - last.end) < gap && (last.text.length + text.length) < 220 && !last.marked){
+    last.text = (last.text + ' ' + text).replace(/\s+/g,' ');
+    last.end = now;
+    renderSegs();
+  }else{
+    S.segs.push({ t: Math.max(0, now - Math.min(6, text.length/6)), end: now, text, marked:false });
+    renderSegs();
+  }
+  S.lastFinal = now;
+}
+function renderSegs(){
+  const box = $('segs');
+  const near = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
+  const q = $('find').value.trim();
+  const em = $('emptyMsg'); if(em) em.style.display = S.segs.length? 'none':'block';
+  const inter = $('interim');
+  box.querySelectorAll('.seg').forEach(n=>n.remove());
+  const frag = document.createDocumentFragment();
+  S.segs.forEach((s,i)=>{
+    const d = document.createElement('div');
+    d.className = 'seg' + (s.marked?' marked':'');
+    let html = esc(s.text);
+    if(q) html = html.replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'), m=>'<mark>'+m+'</mark>');
+    d.innerHTML = '<span class="t" data-i="'+i+'">'+mmss(s.t)+'</span>'
+      + '<span class="x" contenteditable="true" data-i="'+i+'">'+html+'</span>'
+      + '<span class="star" data-i="'+i+'">★</span>';
+    frag.appendChild(d);
+  });
+  inter ? box.insertBefore(frag, inter) : box.appendChild(frag);
+  $('segCount').textContent = S.segs.length + ' 문장';
+  if(near) box.scrollTop = box.scrollHeight;
+}
+$('segs').addEventListener('click', e=>{
+  const i = e.target.dataset.i;
+  if(i===undefined) return;
+  if(e.target.classList.contains('star')){ S.segs[i].marked = !S.segs[i].marked; renderSegs(); }
+  if(e.target.classList.contains('t')){
+    const p=$('player'); if(p.src){ p.currentTime = S.segs[i].t; p.play(); }
+  }
+});
+$('segs').addEventListener('blur', e=>{
+  if(e.target.classList && e.target.classList.contains('x')){
+    S.segs[e.target.dataset.i].text = e.target.textContent.trim();
+  }
+}, true);
+$('find').addEventListener('input', renderSegs);
+$('btnClear').onclick = ()=>{ if(S.segs.length && confirm('전사문을 모두 지울까요?')){ S.segs=[]; renderSegs(); } };
+
+/* ═══════════ 자동 요약 (오프라인) ═══════════ */
+const STOP = new Set(('그리고 그래서 그런데 그러니까 하지만 그러면 이제 저기 여기 거기 그거 이거 저거 뭐 좀 진짜 약간 그냥 아니 네네 예예 우리 저희 지금 오늘 내일 어제 다시 정도 대해 관련 통해 위해 경우 부분 내용 생각 자체 이런 저런 그런 무슨 어떤 있습니다 없습니다 합니다 입니다 같습니다 됩니다 것입니다 때문 사람 대한 하나 가지 이상 이하 다음 이번 아직 먼저 사실 상황 진행 수준 대해서 관해서 the and for that with this from have will your are was but not you').split(' '));
+const JOSA = /(으로서|으로써|에서는|에게서|이라고|라고는|으로|에게|께서|에서|이나|보다|처럼|만큼|까지|부터|조차|마저|이랑|하고|이며|이고|은|는|이|가|을|를|의|에|와|과|도|만|랑|께|야|아)$/;
+const CONN = /(어서|아서|해서|되고|지만|는데|으면|면서|니까|거나|든지|다가|라서|므로)$/;   // 연결어미로 끝나는 활용형 제외
+
+function tokens(t){
+  return (t.match(/[가-힣]{2,}|[A-Z]{2,}|[A-Za-z]{3,}|\d+(?:\.\d+)?%?/g)||[])
+    .map(w=>{ if(/^[가-힣]+$/.test(w) && w.length>2){ const s=w.replace(JOSA,''); if(s.length>=2) return s; } return w; })
+    .filter(w=>!STOP.has(w) && w.length>=2 && !(/^[가-힣]+$/.test(w) && CONN.test(w)));
+}
+function sentences(){
+  const out=[];
+  S.segs.forEach(s=>{
+    s.text.split(/(?<=[.?!다요죠])\s+|(?<=[.?!])/).map(x=>x.trim()).filter(x=>x.length>6)
+      .forEach(x=>out.push({t:s.t, text:x, marked:s.marked}));
+  });
+  if(!out.length) S.segs.forEach(s=>{ if(s.text.length>4) out.push({t:s.t,text:s.text,marked:s.marked}); });
+  return out;
+}
+const PAT = {
+  decide: /(하기로|결정|확정|합의|승인|채택|제정|의결|정하겠|가기로|하는 것으로|하도록)/,
+  action: /(담당|맡아|해야|해주|부탁|요청|준비|작성|공유|보고|검토|확인|조치|제출|반영|취합|정리해|올려|보내)/,
+  due:    /(\d{1,2}\s*월\s*\d{1,2}\s*일|\d{1,2}\/\d{1,2}|다음\s*주|이번\s*주|차주|금주|내일|월말|분기|까지)/,
+  issue:  /(문제|이슈|리스크|우려|지연|부족|미흡|어렵|안 되|안돼|고장|불량|누락|없어서|안 됐)/,
+  number: /\d/
+};
+function autoSummary(){
+  const sents = sentences();
+  if(sents.length < 2) return '<div class="empty">요약할 내용이 부족합니다.</div>';
+  // 키워드 빈도
+  const freq = {};
+  sents.forEach(s=>tokens(s.text).forEach(w=>freq[w]=(freq[w]||0)+1));
+  const keys = Object.entries(freq).filter(([,c])=>c>1).sort((a,b)=>b[1]-a[1]).slice(0,14);
+  const kmax = keys.length? keys[0][1] : 1;
+  // 문장 점수
+  const scored = sents.map((s,i)=>{
+    const tk = tokens(s.text);
+    let sc = tk.reduce((a,w)=>a+(freq[w]||0),0) / Math.sqrt(tk.length+3);
+    if(s.marked) sc *= 2.2;
+    if(PAT.decide.test(s.text)) sc *= 1.5;
+    if(PAT.number.test(s.text)) sc *= 1.15;
+    if(i < sents.length*0.15 || i > sents.length*0.85) sc *= 1.1;
+    if(s.text.length < 12) sc *= 0.5;
+    return {...s, sc, i};
+  });
+  const top = scored.slice().sort((a,b)=>b.sc-a.sc)
+    .slice(0, Math.max(3, Math.min(7, Math.round(sents.length/8))))
+    .sort((a,b)=>a.i-b.i);
+  const pick = re => sents.filter(s=>re.test(s.text)).slice(0,8);
+  const decisions = pick(PAT.decide);
+  const actions = sents.filter(s=>PAT.action.test(s.text) && (PAT.due.test(s.text)||/담당|맡/.test(s.text))).slice(0,8);
+  const issues = pick(PAT.issue);
+  const marked = sents.filter(s=>s.marked);
+
+  const li = arr => arr.map(s=>'<li><span class="badge">'+mmss(s.t)+'</span> '+esc(s.text)+'</li>').join('');
+  let h = '';
+  h += '<div class="kv"><span>총 '+S.segs.length+'문장</span><span>길이 '+fmt(elapsed())+'</span><span>글자 '+S.segs.reduce((a,s)=>a+s.text.length,0).toLocaleString()+'</span></div>';
+  h += '<h3>핵심 요약</h3><ul>'+li(top)+'</ul>';
+  if(keys.length){ h += '<h3>주요 키워드</h3><div class="chips">' +
+    keys.map(([w,c])=>'<span class="chip">'+esc(w)+' <b>'+c+'</b></span>').join('') + '</div>'; }
+  if(decisions.length) h += '<h3>결정·합의로 보이는 발언</h3><ul>'+li(decisions)+'</ul>';
+  if(actions.length)   h += '<h3>실행 항목 후보</h3><ul>'+li(actions)+'</ul>';
+  if(issues.length)    h += '<h3>이슈·리스크 언급</h3><ul>'+li(issues)+'</ul>';
+  if(marked.length)    h += '<h3>★ 표시한 부분</h3><ul>'+li(marked)+'</ul>';
+  h += '<p class="note" style="margin-top:16px">※ 자동 요약은 통계 기반이라 문맥을 이해하지 못합니다. 정밀한 회의록이 필요하면 AI 요약을 쓰세요.</p>';
+  return h;
+}
+
+/* ═══════════ AI 요약 (Claude API) ═══════════ */
+async function aiSummary(){
+  if(!CFG.key){ $('maskSet').classList.add('on'); toast('설정에서 Claude API 키를 입력하세요'); return; }
+  const text = plainTranscript();
+  if(text.length < 30){ toast('전사 내용이 부족합니다'); return; }
+  $('sum').innerHTML = '<div class="empty">AI가 회의록을 정리하는 중…</div>';
+  try{
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'content-type':'application/json',
+        'x-api-key':CFG.key,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body: JSON.stringify({
+        model: CFG.model, max_tokens: 4000,
+        messages:[{role:'user', content: CFG.prompt + '\n\n---\n제목: ' + ($('title').value||'(제목 없음)') + '\n녹음 길이: ' + fmt(elapsed()) + '\n\n[전사문]\n' + text }]
+      })
+    });
+    const j = await res.json();
+    if(!res.ok) throw new Error((j.error && j.error.message) || res.status);
+    const md = (j.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');
+    S.aiMd = md;
+    $('sum').innerHTML = mdToHtml(md);
+  }catch(e){
+    $('sum').innerHTML = '<div class="empty">AI 요약 실패: '+esc(String(e.message||e))+
+      '<br><br>키가 맞는지, 회사망에서 api.anthropic.com 접속이 되는지 확인하세요.</div>';
+  }
+}
+function mdToHtml(md){
+  const lines = md.split('\n'); let h=''; let inUl=false, inTbl=false;
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`(.+?)`/g,'<code>$1</code>');
+  for(let ln of lines){
+    if(/^\s*\|/.test(ln)){
+      if(/^\s*\|[\s:|-]+\|\s*$/.test(ln)) continue;
+      if(!inTbl){ h+='<table style="width:100%;border-collapse:collapse;font-size:13px;margin:8px 0">'; inTbl=true; }
+      const cells = ln.split('|').slice(1,-1).map(c=>c.trim());
+      h += '<tr>'+cells.map(c=>'<td style="border:1px solid var(--line);padding:5px 8px">'+inline(c)+'</td>').join('')+'</tr>';
+      continue;
+    } else if(inTbl){ h+='</table>'; inTbl=false; }
+    if(/^\s*[-*]\s+/.test(ln)){ if(!inUl){h+='<ul>';inUl=true;} h+='<li>'+inline(ln.replace(/^\s*[-*]\s+/,''))+'</li>'; continue; }
+    if(inUl){ h+='</ul>'; inUl=false; }
+    if(/^#{1,6}\s/.test(ln)) h += '<h3>'+inline(ln.replace(/^#+\s/,''))+'</h3>';
+    else if(ln.trim()) h += '<p>'+inline(ln)+'</p>';
+  }
+  if(inUl) h+='</ul>'; if(inTbl) h+='</table>';
+  return h;
+}
+
+/* ═══════════ 내보내기 ═══════════ */
+const plainTranscript = () => S.segs.map(s=>'['+mmss(s.t)+'] '+(s.marked?'★ ':'')+s.text).join('\n');
+function today(){ const d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function fname(ext){ return (($('title').value||'회의녹음').replace(/[\\/:*?"<>|]/g,'_'))+'_'+today()+'.'+ext; }
+function dl(blob, name){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+function buildMd(){
+  const sumTxt = S.aiMd || $('sum').innerText.trim();
+  return '# '+($('title').value||'회의 녹음')+'\n\n'
+    + '- 일시: '+today()+'\n- 길이: '+fmt(elapsed())+'\n- 문장 수: '+S.segs.length+'\n\n'
+    + '## 요약\n\n'+sumTxt+'\n\n## 전체 전사\n\n'+plainTranscript()+'\n';
+}
+$('btnMd').onclick = ()=>dl(new Blob([buildMd()],{type:'text/markdown;charset=utf-8'}), fname('md'));
+$('btnTxt').onclick = ()=>dl(new Blob([plainTranscript()],{type:'text/plain;charset=utf-8'}), fname('txt'));
+$('btnAudio').onclick = ()=>{ if(S.blob) dl(S.blob, fname((S.blob.type.includes('mp4')?'m4a':'webm'))); };
+$('btnCopyAll').onclick = ()=>{ navigator.clipboard.writeText(buildMd()); toast('회의록 전체를 복사했습니다'); };
+$('btnCopySum').onclick = ()=>{ navigator.clipboard.writeText(S.aiMd || $('sum').innerText); toast('요약을 복사했습니다'); };
+
+/* ═══════════ 세션 저장 ═══════════ */
+const store = () => JSON.parse(localStorage.getItem('vn_sess')||'[]');
+$('btnSave').onclick = ()=>{
+  if(!S.segs.length){ toast('저장할 전사문이 없습니다'); return; }
+  const all = store();
+  all.unshift({ id:Date.now(), title:$('title').value||'제목 없는 회의', date:new Date().toLocaleString('ko-KR'),
+                dur:fmt(elapsed()), segs:S.segs, ai:S.aiMd||'' });
+  localStorage.setItem('vn_sess', JSON.stringify(all.slice(0,50)));
+  toast('저장했습니다');
+};
+$('btnList').onclick = ()=>{
+  const all = store(); const box=$('sessList');
+  box.innerHTML = all.length ? '' : '<div class="note">저장된 기록이 없습니다.</div>';
+  all.forEach(s=>{
+    const d=document.createElement('div'); d.className='sess';
+    d.innerHTML = '<div class="g"><b>'+esc(s.title)+'</b><small>'+s.date+' · '+s.dur+' · '+s.segs.length+'문장</small></div>'
+      + '<button class="ghost" style="padding:4px 9px;font-size:12px">삭제</button>';
+    d.querySelector('.g').onclick = ()=>{
+      S.segs = s.segs; S.acc = 0; S.aiMd = s.ai; $('title').value = s.title;
+      renderSegs(); if(s.ai) $('sum').innerHTML = mdToHtml(s.ai);
+      $('maskList').classList.remove('on'); toast('불러왔습니다');
+    };
+    d.querySelector('button').onclick = ()=>{
+      localStorage.setItem('vn_sess', JSON.stringify(store().filter(x=>x.id!==s.id)));
+      $('btnList').onclick();
+    };
+    box.appendChild(d);
+  });
+  $('maskList').classList.add('on');
+};
+$('listClose').onclick = ()=>$('maskList').classList.remove('on');
+
+/* ═══════════ 설정 ═══════════ */
+$('btnSet').onclick = ()=>{
+  $('apiKey').value=CFG.key; $('model').value=CFG.model; $('prompt').value=CFG.prompt; $('gap').value=CFG.gap;
+  $('maskSet').classList.add('on');
+};
+$('setSave').onclick = ()=>{
+  CFG.key=$('apiKey').value.trim(); CFG.model=$('model').value;
+  CFG.prompt=$('prompt').value; CFG.gap=$('gap').value;
+  localStorage.setItem('vn_cfg', JSON.stringify(CFG));
+  $('maskSet').classList.remove('on'); toast('설정을 저장했습니다');
+};
+$('setClose').onclick = ()=>$('maskSet').classList.remove('on');
+document.querySelectorAll('.mask').forEach(m=>m.onclick=e=>{ if(e.target===m) m.classList.remove('on'); });
+
+/* ═══════════ 탭 · 버튼 ═══════════ */
+let tab='auto';
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); tab=b.dataset.tab;
+  $('btnSum').textContent = tab==='ai' ? 'AI 요약 만들기' : '요약 만들기';
+});
+$('btnSum').onclick = ()=>{ if(tab==='ai') aiSummary(); else { S.aiMd=''; $('sum').innerHTML = autoSummary(); } };
+$('btnRec').onclick = startRec;
+$('btnPause').onclick = pauseRec;
+$('btnStop').onclick = stopRec;
+
+/* 단축키: Ctrl+Space 녹음 토글, Ctrl+S 요약 */
+document.addEventListener('keydown', e=>{
+  if(e.ctrlKey && e.code==='Space'){ e.preventDefault(); S.recording? pauseRec() : startRec(); }
+  if(e.ctrlKey && e.key==='s'){ e.preventDefault(); $('btnSum').click(); }
+});
+window.addEventListener('beforeunload', e=>{ if(S.recording || S.segs.length){ e.preventDefault(); e.returnValue=''; } });
+
+/* ═══════════ 태블릿 / PWA ═══════════ */
+
+/* 화면 꺼짐 방지 — 화면이 잠기면 녹음도 인식도 멈추므로 필수 */
+let wl=null;
+async function wakeOn(){
+  try{ if('wakeLock' in navigator) wl = await navigator.wakeLock.request('screen'); }catch(e){}
+}
+function wakeOff(){ try{ wl && wl.release() }catch(e){} wl=null; }
+
+/* 앱을 벗어났다 돌아오면 화면잠금 해제 + 음성인식 재연결 */
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible' && S.recording && !S.paused){
+    wakeOn();
+    if(!S.sttOn) startSTT();
+  }
+});
+
+/* 모바일·태블릿 세로화면: 전사 / 요약 화면 전환 */
+document.querySelectorAll('#viewSw .tab').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#viewSw .tab').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');
+  document.body.classList.toggle('v-sum', b.dataset.view==='sum');
+  document.body.classList.toggle('v-tx',  b.dataset.view==='tx');
+});
+function showSummaryView(){
+  if(innerWidth>960) return;
+  const b=document.querySelector('#viewSw .tab[data-view=sum]'); b && b.click();
+}
+document.body.classList.add('v-tx');
+$('btnSum').addEventListener('click', ()=>setTimeout(showSummaryView, 60));
+
+/* 서비스워커 — 오프라인에서도 앱이 열리게 */
+if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')){
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+}
+
+/* 홈 화면 설치 버튼 (Android / Chrome / Edge) */
+let deferredPrompt=null;
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+addEventListener('beforeinstallprompt', e=>{
+  e.preventDefault(); deferredPrompt=e;
+  if(!standalone) $('btnInstall').style.display='inline-block';
+});
+$('btnInstall').onclick = async ()=>{
+  if(deferredPrompt){
+    deferredPrompt.prompt();
+    const r = await deferredPrompt.userChoice;
+    deferredPrompt=null; $('btnInstall').style.display='none';
+    if(r.outcome==='accepted') toast('홈 화면에 설치했습니다');
+  }else{
+    alert('아이패드/아이폰(Safari): 하단 공유 버튼 → "홈 화면에 추가"\n'
+        + '안드로이드(Chrome): 우측 상단 ⋮ → "앱 설치" 또는 "홈 화면에 추가"');
+  }
+};
+addEventListener('appinstalled', ()=>{ $('btnInstall').style.display='none'; toast('설치 완료'); });
+/* iOS는 beforeinstallprompt가 없으므로 안내 버튼을 직접 노출 */
+if(/iPad|iPhone|iPod/.test(navigator.userAgent) && !standalone)
+  $('btnInstall').style.display='inline-block';
+
+/* ═══════════ 초기 안내 ═══════════ */
+if(!SR) $('sttState').textContent = '이 브라우저는 실시간 전사 미지원 (Chrome/Edge/Safari)';
+if(location.protocol === 'file:')
+  $('sttState').textContent = '⚠ 파일로 직접 열면 인식이 안 됩니다 — 실행.bat 사용';
+/* 홈 화면 바로가기(?rec=1)로 열면 한 번 탭해서 바로 녹음 시작 */
+if(new URLSearchParams(location.search).get('rec')==='1')
+  setTimeout(()=>toast('녹음 시작을 누르면 바로 시작합니다'), 400);
+</script>
+</body>
+</html>
