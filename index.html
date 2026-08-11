@@ -154,6 +154,16 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
 .sess .g{flex:1; cursor:pointer; min-width:0}
 .sess .g:hover{color:var(--accent)}
 .sess small{display:block; color:var(--tx3); font-size:11px}
+/* ── 오류 배너 · 진단 ── */
+#errBox{display:none; margin:0; padding:12px 14px; border-bottom:1px solid var(--line);
+  background:rgba(255,93,93,.12); font-size:13px; line-height:1.65}
+#errBox.on{display:block}
+#errBox b{color:var(--danger)}
+#errBox .fix{color:var(--tx2); display:block; margin-top:4px}
+#errBox button{margin-top:8px; padding:5px 11px; font-size:12px; min-height:0}
+#diagLog{font-family:Consolas,"D2Coding",monospace; font-size:11.5px; line-height:1.7;
+  background:var(--panel2); border:1px solid var(--line); border-radius:9px;
+  padding:10px; max-height:44vh; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0}
 #toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px);
   background:var(--tx); color:var(--bg); padding:10px 18px; border-radius:10px; font-size:13px;
   font-weight:600; opacity:0; transition:.25s; pointer-events:none; z-index:99}
@@ -180,6 +190,7 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
   </div>
   <div class="spacer"></div>
   <span class="hint" id="sttState">대기 중</span>
+  <button class="ghost" id="btnDiag" title="전사가 안 될 때 원인 확인">🩺 진단</button>
   <button class="ghost" id="btnSet">⚙ 설정</button>
 </header>
 
@@ -191,6 +202,7 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
       <input type="text" id="find" placeholder="전사문 검색" style="padding:5px 9px;font-size:12px;width:150px">
       <button class="ghost" id="btnClear" style="padding:5px 10px;font-size:12px">전체 지우기</button>
     </h2>
+    <div id="errBox"></div>
     <div class="body" id="segs">
       <div class="empty" id="emptyMsg">
         <b>녹음 시작</b>을 누르면 말하는 내용이 실시간으로 글로 적힙니다.<br>
@@ -256,6 +268,16 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
       <textarea id="prompt" rows="6" style="background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:10px"></textarea>
     </div>
     <div class="row">
+      <label>녹음 모드 — 태블릿·휴대폰에서 전사가 안 되면 '전사 우선'으로 바꾸세요</label>
+      <select id="mode">
+        <option value="auto">자동 (전사+녹음으로 시작, 충돌하면 전사 우선으로 전환)</option>
+        <option value="both">전사 + 오디오 녹음</option>
+        <option value="stt">전사 우선 (오디오 파일 저장 안 함)</option>
+        <option value="rec">녹음만 (전사 안 함)</option>
+      </select>
+      <p class="note" style="margin:6px 0 0">안드로이드·iOS는 마이크를 한 곳에서만 쓸 수 있어, 오디오 녹음이 음성인식을 막는 경우가 있습니다.</p>
+    </div>
+    <div class="row">
       <label>문장 자동 나누기 간격(초) — 이 시간 이상 말이 끊기면 새 문단</label>
       <input type="text" id="gap" style="width:100px">
     </div>
@@ -275,6 +297,20 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
   </div>
 </div>
 
+<div class="mask" id="maskDiag">
+  <div class="modal">
+    <h3>🩺 진단</h3>
+    <p class="note">전사가 안 되는 원인을 찾습니다. <b>음성인식 테스트</b>를 누르고 마이크에 대고
+      "하나 둘 셋 테스트"라고 말해 보세요. 결과를 복사해서 보내주시면 원인을 정확히 잡을 수 있습니다.</p>
+    <div style="display:flex; gap:8px; margin:14px 0">
+      <button class="primary" id="diagRun" style="flex:1">음성인식 10초 테스트</button>
+      <button id="diagCopy">복사</button>
+    </div>
+    <pre id="diagLog">아직 검사하지 않았습니다.</pre>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px"><button id="diagClose">닫기</button></div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -282,10 +318,11 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
 const S = {
   recording:false, paused:false, segs:[], t0:0, acc:0,
   media:null, stream:null, chunks:[], blob:null, rec:null,
-  wantSTT:false, sttOn:false, restartTimer:null, lastFinal:0
+  wantSTT:false, sttOn:false, restartTimer:null, lastFinal:0,
+  diag:[], errRun:0, errFirst:0, gotResult:false, audioOff:false
 };
 const CFG = Object.assign({
-  key:'', model:'claude-sonnet-5', gap:'2.5',
+  key:'', model:'claude-sonnet-5', gap:'2.5', mode:'auto',
   prompt:`당신은 제조 현장 회의록 작성 전문가입니다. 아래는 회의 음성을 실시간 인식한 전사문이며 오탈자와 끊김이 있을 수 있습니다. 문맥으로 보정해서 읽고 다음 형식의 한국어 회의록을 마크다운으로 작성하세요.
 
 ## 한 줄 요약
@@ -307,36 +344,53 @@ const elapsed = () => S.recording && !S.paused ? S.acc + (performance.now()-S.t0
 
 /* ═══════════ 녹음 ═══════════ */
 async function startRec(){
-  try{
-    S.stream = await navigator.mediaDevices.getUserMedia({
-      audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true }
-    });
-  }catch(e){
-    toast('마이크를 사용할 수 없습니다: '+e.name); return;
+  S.diag=[]; S.errRun=0; S.errFirst=0; S.gotResult=false; S.audioOff=false; clearErr();
+  dlog('=== 녹음 시작 (모드: '+CFG.mode+') ===');
+
+  const wantAudio = CFG.mode!=='stt';   // '전사 우선'이면 마이크를 음성인식에만 넘긴다
+  const wantSTT   = CFG.mode!=='rec';
+
+  if(wantAudio){
+    try{
+      S.stream = await navigator.mediaDevices.getUserMedia({
+        audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true }
+      });
+      dlog('getUserMedia OK');
+    }catch(e){
+      dlog('getUserMedia 실패: '+e.name);
+      toast('마이크를 사용할 수 없습니다: '+e.name);
+      showErr(e.name==='NotAllowedError' ? 'not-allowed' : 'audio-capture');
+      return;
+    }
+  }else{
+    S.audioOff = true; dlog('전사 우선 모드 — 오디오 녹음 생략');
   }
   // 오디오 파일 녹음
   S.chunks=[];
-  let mime = ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(m=>MediaRecorder.isTypeSupported(m))||'';
-  S.media = new MediaRecorder(S.stream, mime?{mimeType:mime}:undefined);
-  S.media.ondataavailable = e => { if(e.data.size) S.chunks.push(e.data); };
-  S.media.onstop = () => {
-    S.blob = new Blob(S.chunks, {type:S.media.mimeType||'audio/webm'});
-    const url = URL.createObjectURL(S.blob);
-    const p = $('player'); p.src = url; p.style.display='block';
-    $('btnAudio').disabled = false;
-  };
-  S.media.start(1000);
-  // 볼륨 미터
-  meterStart(S.stream);
+  if(wantAudio){
+    let mime = ['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(m=>MediaRecorder.isTypeSupported(m))||'';
+    dlog('MediaRecorder mime: '+(mime||'기본값'));
+    S.media = new MediaRecorder(S.stream, mime?{mimeType:mime}:undefined);
+    S.media.ondataavailable = e => { if(e.data.size) S.chunks.push(e.data); };
+    S.media.onstop = () => {
+      if(!S.chunks.length) return;
+      S.blob = new Blob(S.chunks, {type:S.media.mimeType||'audio/webm'});
+      const url = URL.createObjectURL(S.blob);
+      const p = $('player'); p.src = url; p.style.display='block';
+      $('btnAudio').disabled = false;
+    };
+    S.media.start(1000);
+    meterStart(S.stream);   // 볼륨 미터
+  }
   // 상태
   S.recording=true; S.paused=false; S.acc=0; S.t0=performance.now(); S.lastFinal=0;
   $('btnRec').disabled=true; $('btnPause').disabled=false; $('btnStop').disabled=false; $('lang').disabled=true;
   $('dot').className='dot rec';
   $('player').style.display='none'; $('btnAudio').disabled=true;
   tick();
-  startSTT();
+  if(wantSTT) startSTT(); else $('sttState').textContent='녹음만 (전사 꺼짐)';
   wakeOn();                       // 태블릿 화면 꺼짐 방지 (꺼지면 녹음·인식이 중단됨)
-  toast('녹음을 시작했습니다');
+  toast(wantAudio ? '녹음을 시작했습니다' : '전사를 시작했습니다 (오디오 저장 안 함)');
 }
 function pauseRec(){
   if(!S.recording) return;
@@ -388,13 +442,47 @@ function meterStop(){ cancelAnimationFrame(meterRAF); ana=null; $('meter').style
 
 /* ═══════════ 음성인식 ═══════════ */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+/* 진단 로그 — 무슨 일이 있었는지 전부 기록해 둔다 */
+function dlog(msg){
+  S.diag.push(mmss(elapsed())+' | '+msg);
+  if(S.diag.length>250) S.diag.shift();
+}
+
+/* 오류를 사람이 읽을 수 있는 말로 화면에 띄운다 */
+const ERRS = {
+  'not-allowed':      ['마이크 권한이 거부되었습니다.', '주소창 왼쪽 자물쇠(또는 ⓘ) → 마이크 → 허용으로 바꾸고 페이지를 새로고침하세요.'],
+  'service-not-allowed':['기기의 음성인식 서비스를 쓸 수 없습니다.', '안드로이드: 설정 → 앱 → "Google" 앱이 사용 중지되어 있지 않은지 확인하세요. 삼성 인터넷이 아니라 Chrome으로 열어야 합니다.'],
+  'network':          ['음성인식 서버에 접속하지 못했습니다.', '실시간 전사는 인터넷이 필요합니다. 사내 Wi-Fi가 막고 있을 수 있으니 휴대폰 핫스팟이나 다른 망에서 시험해 보세요. (녹음과 요약은 계속 됩니다)'],
+  'audio-capture':    ['마이크를 열지 못했습니다.', '다른 앱이 마이크를 쓰고 있을 수 있습니다. 통화·녹음기 앱을 끄고 다시 시도하세요.'],
+  'language-not-supported':['선택한 언어를 지원하지 않습니다.', '상단에서 언어를 한국어로 바꿔 보세요.'],
+  'unsupported':      ['이 브라우저는 실시간 전사를 지원하지 않습니다.', '갤럭시탭은 삼성 인터넷이 아니라 Chrome으로 여세요. PC는 Chrome 또는 Edge를 쓰세요.'],
+  'no-result-12s':    ['마이크는 열렸는데 12초 동안 인식된 말이 없습니다.',
+                       '① 마이크에 소리가 들어오는지(상단 음량 막대가 움직이는지) 확인하세요. ② 태블릿이라면 ⚙ 설정 → 녹음 모드를 "전사 우선"으로 바꿔 보세요 — 오디오 녹음이 마이크를 잡고 있으면 인식이 조용히 실패합니다.']
+};
+function showErr(code, extra){
+  const e = ERRS[code] || ['음성인식 오류: '+code, '🩺 진단 버튼을 눌러 상세 내용을 확인하세요.'];
+  $('errBox').innerHTML = '<b>⚠ '+esc(e[0])+'</b><span class="fix">'+esc(e[1])+(extra?' '+esc(extra):'')+'</span>'
+    + '<button id="errHide">닫기</button> <button id="errDiag">🩺 진단 열기</button>';
+  $('errBox').classList.add('on');
+  $('errHide').onclick = ()=>$('errBox').classList.remove('on');
+  $('errDiag').onclick = ()=>{ $('errBox').classList.remove('on'); openDiag(); };
+}
+const clearErr = ()=>$('errBox').classList.remove('on');
+
 function startSTT(){
-  if(!SR){ $('sttState').textContent='이 브라우저는 실시간 전사 미지원 (Chrome/Edge 사용)'; return; }
+  if(!SR){
+    $('sttState').textContent='이 브라우저는 실시간 전사 미지원';
+    showErr('unsupported'); dlog('SpeechRecognition 없음'); return;
+  }
   S.wantSTT = true;
   if(S.sttOn) return;
   const r = new SR();
   r.lang = $('lang').value; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
-  r.onstart = () => { S.sttOn=true; $('sttState').textContent='● 인식 중'; };
+
+  r.onstart      = () => { S.sttOn=true; $('sttState').textContent='● 인식 중'; dlog('onstart'); };
+  r.onaudiostart = () => dlog('onaudiostart (마이크 열림)');
+  r.onspeechstart= () => dlog('onspeechstart (말소리 감지)');
   r.onresult = e => {
     let interim='';
     for(let i=e.resultIndex; i<e.results.length; i++){
@@ -403,16 +491,40 @@ function startSTT(){
       else interim += txt;
     }
     setInterim(interim);
+    if(!S.gotResult){ S.gotResult=true; dlog('첫 인식 결과 수신 ✅'); clearErr(); }
+    S.errRun = 0;
   };
+
   r.onerror = e => {
+    dlog('ONERROR = '+e.error);
+    if(e.error==='no-speech' || e.error==='aborted') return;      // 정상적인 침묵 — 무시하고 재연결
+    const now = Date.now();
+    if(now - S.errFirst > 15000){ S.errRun=0; S.errFirst=now; }
+    S.errRun++;
+
     if(e.error==='not-allowed' || e.error==='service-not-allowed'){
-      S.wantSTT=false; $('sttState').textContent='마이크 권한 거부됨';
-    }else if(e.error==='network'){
-      $('sttState').textContent='네트워크 오류 — 인식 서버 접속 불가';
+      S.wantSTT=false; $('sttState').textContent='마이크 권한 거부됨'; showErr(e.error); return;
     }
+    /* 마이크 점유 충돌 추정 — 오디오 녹음을 포기하고 전사를 살린다 */
+    if((e.error==='audio-capture' || e.error==='network') && S.errRun>=2
+       && !S.audioOff && CFG.mode==='auto' && S.media && S.media.state!=='inactive'){
+      S.audioOff = true;
+      try{ S.media.stop() }catch(x){}
+      try{ S.stream.getTracks().forEach(t=>t.stop()) }catch(x){}
+      meterStop();
+      dlog('자동 전환: 오디오 녹음 중단 → 전사 우선');
+      toast('오디오 녹음을 멈추고 전사를 우선합니다');
+      showErr(e.error, '→ 오디오 녹음을 자동으로 중단하고 전사만 계속합니다. 여기까지 녹음된 소리는 저장할 수 있습니다.');
+      clearTimeout(S.restartTimer);
+      S.restartTimer = setTimeout(()=>{ if(S.wantSTT) startSTT(); }, 800);
+      return;
+    }
+    if(S.errRun>=2) showErr(e.error);
+    $('sttState').textContent = '오류: '+e.error+' (재연결 중)';
   };
+
   r.onend = () => {
-    S.sttOn=false;
+    S.sttOn=false; dlog('onend');
     if(S.wantSTT && S.recording && !S.paused){
       clearTimeout(S.restartTimer);
       S.restartTimer = setTimeout(()=>{ if(S.wantSTT) try{ r.start() }catch(e){ startSTT() } }, 250);
@@ -422,7 +534,16 @@ function startSTT(){
     }
   };
   S.rec = r;
-  try{ r.start() }catch(e){}
+  try{ r.start(); dlog('start() 호출'); }catch(e){ dlog('start() 예외: '+e.name); }
+
+  /* 12초 안에 결과가 하나도 없으면 조용히 실패한 것 — 알려준다 */
+  setTimeout(()=>{
+    if(S.recording && !S.gotResult && S.wantSTT && !$('errBox').classList.contains('on')){
+      dlog('12초간 인식 결과 없음');
+      $('sttState').textContent='인식 결과 없음';
+      showErr('no-result-12s');
+    }
+  }, 12000);
 }
 function stopSTT(){
   S.wantSTT=false; clearTimeout(S.restartTimer);
@@ -663,14 +784,90 @@ $('listClose').onclick = ()=>$('maskList').classList.remove('on');
 
 /* ═══════════ 설정 ═══════════ */
 $('btnSet').onclick = ()=>{
-  $('apiKey').value=CFG.key; $('model').value=CFG.model; $('prompt').value=CFG.prompt; $('gap').value=CFG.gap;
+  $('apiKey').value=CFG.key; $('model').value=CFG.model; $('prompt').value=CFG.prompt;
+  $('gap').value=CFG.gap; $('mode').value=CFG.mode;
   $('maskSet').classList.add('on');
 };
 $('setSave').onclick = ()=>{
   CFG.key=$('apiKey').value.trim(); CFG.model=$('model').value;
-  CFG.prompt=$('prompt').value; CFG.gap=$('gap').value;
+  CFG.prompt=$('prompt').value; CFG.gap=$('gap').value; CFG.mode=$('mode').value;
   localStorage.setItem('vn_cfg', JSON.stringify(CFG));
   $('maskSet').classList.remove('on'); toast('설정을 저장했습니다');
+};
+
+/* ═══════════ 진단 ═══════════ */
+async function envReport(){
+  const L=[];
+  L.push('■ 환경');
+  L.push('  주소     : '+location.href);
+  L.push('  프로토콜 : '+location.protocol+(location.protocol==='https:'?' ✅':' ⚠ HTTPS가 아니면 마이크가 막힙니다'));
+  L.push('  설치상태 : '+(matchMedia('(display-mode: standalone)').matches?'홈 화면 앱으로 실행 중':'브라우저 탭'));
+  L.push('  브라우저 : '+navigator.userAgent);
+  L.push('  언어설정 : '+$('lang').value+' / 녹음모드: '+CFG.mode);
+  L.push('');
+  L.push('■ 기능 지원');
+  L.push('  SpeechRecognition : '+(SR?'있음 ✅':'없음 ❌  ← Chrome으로 여세요'));
+  L.push('  MediaRecorder     : '+(typeof MediaRecorder!=='undefined'?'있음 ✅':'없음 ❌'));
+  L.push('  getUserMedia      : '+(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia?'있음 ✅':'없음 ❌'));
+  try{
+    const p = await navigator.permissions.query({name:'microphone'});
+    L.push('  마이크 권한       : '+p.state+(p.state==='granted'?' ✅':p.state==='denied'?' ❌ 거부됨':' (아직 안 물어봄)'));
+  }catch(e){ L.push('  마이크 권한       : 확인 불가 ('+e.name+')'); }
+  try{
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    const mics = ds.filter(d=>d.kind==='audioinput');
+    L.push('  마이크 장치       : '+mics.length+'개'+(mics.length?' — '+mics.map(m=>m.label||'(이름 숨김)').join(', '):' ❌'));
+  }catch(e){ L.push('  마이크 장치       : 조회 실패'); }
+  return L.join('\n');
+}
+async function openDiag(){
+  $('maskDiag').classList.add('on');
+  $('diagLog').textContent = await envReport()
+    + (S.diag.length ? '\n\n■ 지난 녹음 기록\n  '+S.diag.join('\n  ') : '\n\n(아직 녹음 기록이 없습니다)');
+}
+$('btnDiag').onclick = openDiag;
+$('diagClose').onclick = ()=>$('maskDiag').classList.remove('on');
+$('diagCopy').onclick = ()=>{ navigator.clipboard.writeText($('diagLog').textContent); toast('진단 결과를 복사했습니다'); };
+
+$('diagRun').onclick = async ()=>{
+  const btn=$('diagRun'); btn.disabled=true; btn.textContent='검사 중… 말해 보세요';
+  const L=[await envReport(), '', '■ 음성인식 10초 테스트'];
+  const t0=Date.now(), put=m=>{ L.push('  '+((Date.now()-t0)/1000).toFixed(1)+'s '+m); $('diagLog').textContent=L.join('\n'); };
+  $('diagLog').textContent = L.join('\n');
+
+  let stream=null;
+  try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); put('getUserMedia 성공 ✅ (마이크 열림)'); }
+  catch(e){ put('getUserMedia 실패 ❌ '+e.name+' — 마이크 권한을 허용해야 합니다'); }
+
+  if(!SR){ put('SpeechRecognition 없음 ❌'); }
+  else{
+    await new Promise(done=>{
+      const r=new SR(); r.lang=$('lang').value; r.continuous=true; r.interimResults=true;
+      let got=0;
+      r.onstart=()=>put('onstart');
+      r.onaudiostart=()=>put('onaudiostart (인식기가 마이크를 잡음)');
+      r.onspeechstart=()=>put('onspeechstart (말소리 감지 ✅)');
+      r.onresult=e=>{ got++; put('onresult ✅ "'+e.results[e.results.length-1][0].transcript.trim()+'"'); };
+      r.onerror=e=>put('ONERROR = '+e.error+'  ← '+((ERRS[e.error]||['원인 미상'])[0]));
+      r.onend=()=>{ put('onend (인식 결과 '+got+'건)'); done(); };
+      try{ r.start(); put('start() 호출'); }catch(e){ put('start() 예외 '+e.name); done(); }
+      setTimeout(()=>{ try{r.stop()}catch(e){ done() } }, 10000);
+      setTimeout(done, 12000);
+    });
+  }
+  try{ stream && stream.getTracks().forEach(t=>t.stop()); }catch(e){}
+
+  const txt=L.join('\n');
+  L.push('', '■ 판정');
+  if(!SR) L.push('  → 이 브라우저는 실시간 전사를 못 합니다. Chrome으로 여세요.');
+  else if(/getUserMedia 실패/.test(txt)) L.push('  → 마이크 권한 문제입니다. 주소창 자물쇠 → 마이크 → 허용.');
+  else if(/ONERROR = network/.test(txt)) L.push('  → 인식 서버 접속 차단(사내망 가능성). 핫스팟으로 재시험해 보세요.');
+  else if(/ONERROR = service-not-allowed/.test(txt)) L.push('  → 기기의 Google 음성인식이 꺼져 있습니다. Chrome + Google 앱 활성화 필요.');
+  else if(/onresult ✅/.test(txt)) L.push('  → 음성인식 자체는 정상입니다 ✅  전사가 안 됐다면 ⚙ 설정 → 녹음 모드를 "전사 우선"으로 바꾸세요.');
+  else if(/onaudiostart/.test(txt)) L.push('  → 마이크는 열렸으나 인식 결과가 없습니다. 소리가 너무 작거나, 오디오 녹음이 마이크를 점유했을 수 있습니다. 녹음 모드를 "전사 우선"으로 바꿔 재시험하세요.');
+  else L.push('  → 인식기가 시작조차 못 했습니다. 위 ONERROR 항목을 확인하세요.');
+  $('diagLog').textContent = L.join('\n');
+  btn.disabled=false; btn.textContent='음성인식 10초 테스트';
 };
 $('setClose').onclick = ()=>$('maskSet').classList.remove('on');
 document.querySelectorAll('.mask').forEach(m=>m.onclick=e=>{ if(e.target===m) m.classList.remove('on'); });
@@ -728,6 +925,12 @@ $('btnSum').addEventListener('click', ()=>setTimeout(showSummaryView, 60));
 /* 서비스워커 — 오프라인에서도 앱이 열리게 */
 if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')){
   navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  /* 새 버전이 배포되면 한 번만 자동 새로고침 (녹음 중에는 하지 않음) */
+  let reloaded=false;
+  navigator.serviceWorker.addEventListener('controllerchange', ()=>{
+    if(reloaded || S.recording || S.segs.length) return;
+    reloaded=true; location.reload();
+  });
 }
 
 /* 홈 화면 설치 버튼 (Android / Chrome / Edge) */

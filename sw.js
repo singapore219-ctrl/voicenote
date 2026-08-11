@@ -1,5 +1,5 @@
 /* AI 녹음노트 — 오프라인 캐시 서비스워커 */
-const V = 'vn-v3';
+const V = 'vn-v4';
 const SHELL = [
   './',
   './index.html',
@@ -32,7 +32,19 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;                // 외부(api.anthropic.com 등)는 캐시 안 함
 
-  // stale-while-revalidate: 캐시 먼저 → 백그라운드로 갱신
+  // 앱 본체(HTML)는 네트워크 우선 — 수정한 내용이 바로 반영되도록
+  const isDoc = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('.html');
+  if (isDoc) {
+    e.respondWith(
+      fetch(req).then(res => {
+        if (res && res.ok) { const c = res.clone(); caches.open(V).then(k => k.put(req, c)); }
+        return res;
+      }).catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  // 나머지 자원은 stale-while-revalidate: 캐시 먼저 → 백그라운드로 갱신
   e.respondWith(
     caches.match(req).then(hit => {
       const net = fetch(req).then(res => {
