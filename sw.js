@@ -1,5 +1,5 @@
 /* AI 녹음노트 — 오프라인 캐시 서비스워커 */
-const V = 'vn-v5';
+const V = 'vn-v6';
 const SHELL = [
   './',
   './index.html',

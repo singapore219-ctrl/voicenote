@@ -279,8 +279,8 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
       <p class="note" style="margin:6px 0 0">안드로이드·iOS는 마이크를 한 곳에서만 쓸 수 있어, 오디오 녹음이 음성인식을 막는 경우가 있습니다.</p>
     </div>
     <div class="row">
-      <label>문장 자동 나누기 간격(초) — 이 시간 이상 말이 끊기면 새 문단</label>
-      <input type="text" id="gap" style="width:100px">
+      <label>문단 최대 글자수 — 이보다 길어지면 문장 단위로 나눕니다</label>
+      <input type="text" id="maxLen" style="width:100px">
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button id="setClose">닫기</button>
@@ -317,17 +317,19 @@ footer{display:flex; gap:8px; padding:10px 18px; background:var(--panel);
 
 <script>
 /* 빌드 표시 — 화면에서 어느 버전이 도는지 바로 확인할 수 있게 */
-const BUILD = 'v3 · 2026-08-11 진단판';
+const BUILD = 'v4 · 2026-08-12 중복수정';
 
 /* ═══════════ 상태 ═══════════ */
 const S = {
   recording:false, paused:false, segs:[], t0:0, acc:0,
   media:null, stream:null, chunks:[], blob:null, rec:null,
   wantSTT:false, sttOn:false, restartTimer:null, lastFinal:0,
-  diag:[], errRun:0, errFirst:0, gotResult:false, audioOff:false
+  diag:[], errRun:0, errFirst:0, gotResult:false, audioOff:false,
+  curSeg:null,                     // 현재 인식 구간이 쓰고 있는 문단의 위치
+  aiMd:'', autoMd:''               // 생성된 요약(마크다운) — 내보내기에 그대로 사용
 };
 const CFG = Object.assign({
-  key:'', model:'claude-sonnet-5', gap:'2.5', mode:'auto',
+  key:'', model:'claude-sonnet-5', maxLen:'160', mode:'auto',
   prompt:`당신은 제조 현장 회의록 작성 전문가입니다. 아래는 회의 음성을 실시간 인식한 전사문이며 오탈자와 끊김이 있을 수 있습니다. 문맥으로 보정해서 읽고 다음 형식의 한국어 회의록을 마크다운으로 작성하세요.
 
 ## 한 줄 요약
@@ -349,7 +351,7 @@ const elapsed = () => S.recording && !S.paused ? S.acc + (performance.now()-S.t0
 
 /* ═══════════ 녹음 ═══════════ */
 async function startRec(){
-  S.diag=[]; S.errRun=0; S.errFirst=0; S.gotResult=false; S.audioOff=false; clearErr();
+  S.diag=[]; S.errRun=0; S.errFirst=0; S.gotResult=false; S.audioOff=false; S.curSeg=null; S.autoMd=''; S.aiMd=''; clearErr();
   dlog('=== 녹음 시작 (모드: '+CFG.mode+') ===');
 
   const wantAudio = CFG.mode!=='stt';   // '전사 우선'이면 마이크를 음성인식에만 넘긴다
@@ -411,7 +413,7 @@ function pauseRec(){
 function stopRec(){
   if(!S.recording) return;
   S.acc = elapsed(); S.recording=false; S.paused=false;
-  stopSTT(); meterStop(); wakeOff();
+  stopSTT(); sealSeg(); meterStop(); wakeOff();
   try{ S.media.stop() }catch(e){}
   try{ S.stream.getTracks().forEach(t=>t.stop()) }catch(e){}
   $('btnRec').disabled=false; $('btnPause').disabled=true; $('btnStop').disabled=true; $('lang').disabled=false;
@@ -489,12 +491,14 @@ function startSTT(){
   r.onaudiostart = () => dlog('onaudiostart (마이크 열림)');
   r.onspeechstart= () => dlog('onspeechstart (말소리 감지)');
   r.onresult = e => {
-    let interim='';
-    for(let i=e.resultIndex; i<e.results.length; i++){
+    // resultIndex/isFinal 동작이 기기마다 달라서, 매번 전체를 다시 계산한다
+    let finalTxt='', interim='';
+    for(let i=0; i<e.results.length; i++){
       const txt = e.results[i][0].transcript;
-      if(e.results[i].isFinal) addSeg(txt.trim());
+      if(e.results[i].isFinal) finalTxt += txt + ' ';
       else interim += txt;
     }
+    if(finalTxt.trim()) putFinal(finalTxt);
     setInterim(interim);
     if(!S.gotResult){ S.gotResult=true; dlog('첫 인식 결과 수신 ✅'); clearErr(); }
     S.errRun = 0;
@@ -529,7 +533,7 @@ function startSTT(){
   };
 
   r.onend = () => {
-    S.sttOn=false; dlog('onend');
+    S.sttOn=false; dlog('onend'); sealSeg();   // 구간 종료 → 문단 확정
     if(S.wantSTT && S.recording && !S.paused){
       clearTimeout(S.restartTimer);
       S.restartTimer = setTimeout(()=>{ if(S.wantSTT) try{ r.start() }catch(e){ startSTT() } }, 250);
@@ -563,21 +567,50 @@ function setInterim(t){
 }
 
 /* ═══════════ 전사 세그먼트 ═══════════ */
-function addSeg(text){
+/* 인식 구간 하나 = 문단 하나.
+   안드로이드 Chrome은 확정 결과를 "지금까지의 전체 문장"으로 반복해서 보내므로,
+   덧붙이지 않고 항상 통째로 '교체'한다. 이래야 중복이 생기지 않는다. */
+function putFinal(text){
+  text = text.replace(/\s+/g,' ').trim();
   if(!text) return;
   const now = elapsed();
-  const gap = parseFloat(CFG.gap)||2.5;
-  const last = S.segs[S.segs.length-1];
-  // 짧은 간격으로 이어진 발화는 같은 문단으로 합치기
-  if(last && (now - last.end) < gap && (last.text.length + text.length) < 220 && !last.marked){
-    last.text = (last.text + ' ' + text).replace(/\s+/g,' ');
-    last.end = now;
-    renderSegs();
+  const cur = S.curSeg!==null ? S.segs[S.curSeg] : null;
+
+  // 인식기가 결과를 리셋해 문장이 짧아졌으면, 지금까지 것을 확정하고 새 문단 시작
+  if(cur && text.length < cur.text.length && !text.startsWith(cur.text.slice(0,10))) sealSeg();
+
+  if(S.curSeg===null || !S.segs[S.curSeg]){
+    S.segs.push({ t:now, end:now, text, marked:false });
+    S.curSeg = S.segs.length-1;
   }else{
-    S.segs.push({ t: Math.max(0, now - Math.min(6, text.length/6)), end: now, text, marked:false });
-    renderSegs();
+    S.segs[S.curSeg].text = text;      // ← 덧붙이지 않고 교체
+    S.segs[S.curSeg].end  = now;
   }
   S.lastFinal = now;
+  renderSegs();
+}
+
+/* 인식 구간이 끝나면 문단을 확정하고, 너무 길면 문장 단위로 쪼갠다 */
+function sealSeg(){
+  const i = S.curSeg;
+  S.curSeg = null;
+  if(i===null || !S.segs[i]) return;
+  const seg = S.segs[i];
+  const max = parseInt(CFG.maxLen,10) || 160;
+  if(seg.text.length <= max || seg.marked) return;
+
+  const parts = seg.text.split(/(?<=[.?!다요죠])\s+/).map(s=>s.trim()).filter(Boolean);
+  if(parts.length < 2) return;
+  // 긴 문단을 문장 단위로 나누되, 타임스탬프는 길이 비례로 배분해 되듣기가 맞도록
+  const span = Math.max(0, seg.end - seg.t), total = seg.text.length;
+  const out=[]; let used=0;
+  parts.forEach(p=>{
+    const t = seg.t + span*(used/total);
+    used += p.length;
+    out.push({ t, end: seg.t + span*(used/total), text:p, marked:false });
+  });
+  S.segs.splice(i, 1, ...out);
+  renderSegs();
 }
 function renderSegs(){
   const box = $('segs');
@@ -615,7 +648,7 @@ $('segs').addEventListener('blur', e=>{
   }
 }, true);
 $('find').addEventListener('input', renderSegs);
-$('btnClear').onclick = ()=>{ if(S.segs.length && confirm('전사문을 모두 지울까요?')){ S.segs=[]; renderSegs(); } };
+$('btnClear').onclick = ()=>{ if(S.segs.length && confirm('전사문을 모두 지울까요?')){ S.segs=[]; S.curSeg=null; S.autoMd=''; S.aiMd=''; renderSegs(); } };
 
 /* ═══════════ 자동 요약 (오프라인) ═══════════ */
 const STOP = new Set(('그리고 그래서 그런데 그러니까 하지만 그러면 이제 저기 여기 거기 그거 이거 저거 뭐 좀 진짜 약간 그냥 아니 네네 예예 우리 저희 지금 오늘 내일 어제 다시 정도 대해 관련 통해 위해 경우 부분 내용 생각 자체 이런 저런 그런 무슨 어떤 있습니다 없습니다 합니다 입니다 같습니다 됩니다 것입니다 때문 사람 대한 하나 가지 이상 이하 다음 이번 아직 먼저 사실 상황 진행 수준 대해서 관해서 the and for that with this from have will your are was but not you').split(' '));
@@ -645,7 +678,7 @@ const PAT = {
 };
 function autoSummary(){
   const sents = sentences();
-  if(sents.length < 2) return '<div class="empty">요약할 내용이 부족합니다.</div>';
+  if(sents.length < 2) return {html:'<div class="empty">요약할 내용이 부족합니다.</div>', md:'(요약할 내용이 부족합니다)'};
   // 키워드 빈도
   const freq = {};
   sents.forEach(s=>tokens(s.text).forEach(w=>freq[w]=(freq[w]||0)+1));
@@ -672,17 +705,32 @@ function autoSummary(){
   const marked = sents.filter(s=>s.marked);
 
   const li = arr => arr.map(s=>'<li><span class="badge">'+mmss(s.t)+'</span> '+esc(s.text)+'</li>').join('');
-  let h = '';
+  const mdli = arr => arr.map(s=>'- `'+mmss(s.t)+'` '+s.text).join('\n')+'\n';
+
+  let h = '', m = '';
+  const sec = (title, arr) => {
+    if(!arr.length) return;
+    h += '<h3>'+title+'</h3><ul>'+li(arr)+'</ul>';
+    m += '\n### '+title+'\n\n'+mdli(arr);
+  };
+
   h += '<div class="kv"><span>총 '+S.segs.length+'문장</span><span>길이 '+fmt(elapsed())+'</span><span>글자 '+S.segs.reduce((a,s)=>a+s.text.length,0).toLocaleString()+'</span></div>';
-  h += '<h3>핵심 요약</h3><ul>'+li(top)+'</ul>';
-  if(keys.length){ h += '<h3>주요 키워드</h3><div class="chips">' +
-    keys.map(([w,c])=>'<span class="chip">'+esc(w)+' <b>'+c+'</b></span>').join('') + '</div>'; }
-  if(decisions.length) h += '<h3>결정·합의로 보이는 발언</h3><ul>'+li(decisions)+'</ul>';
-  if(actions.length)   h += '<h3>실행 항목 후보</h3><ul>'+li(actions)+'</ul>';
-  if(issues.length)    h += '<h3>이슈·리스크 언급</h3><ul>'+li(issues)+'</ul>';
-  if(marked.length)    h += '<h3>★ 표시한 부분</h3><ul>'+li(marked)+'</ul>';
+  m += '총 '+S.segs.length+'문장 · 길이 '+fmt(elapsed())+' · 글자 '+S.segs.reduce((a,s)=>a+s.text.length,0).toLocaleString()+'\n';
+
+  sec('핵심 요약', top);
+  if(keys.length){
+    h += '<h3>주요 키워드</h3><div class="chips">' +
+      keys.map(([w,c])=>'<span class="chip">'+esc(w)+' <b>'+c+'</b></span>').join('') + '</div>';
+    m += '\n### 주요 키워드\n\n' + keys.map(([w,c])=>w+'('+c+')').join(', ') + '\n';
+  }
+  sec('결정·합의로 보이는 발언', decisions);
+  sec('실행 항목 후보', actions);
+  sec('이슈·리스크 언급', issues);
+  sec('★ 표시한 부분', marked);
+
   h += '<p class="note" style="margin-top:16px">※ 자동 요약은 통계 기반이라 문맥을 이해하지 못합니다. 정밀한 회의록이 필요하면 AI 요약을 쓰세요.</p>';
-  return h;
+  m += '\n> ※ 자동 요약은 통계 기반이라 문맥을 이해하지 못합니다. 정밀한 회의록이 필요하면 AI 요약을 쓰세요.\n';
+  return {html:h, md:m};
 }
 
 /* ═══════════ AI 요약 (Claude API) ═══════════ */
@@ -744,7 +792,12 @@ function dl(blob, name){
   a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
 }
 function buildMd(){
-  const sumTxt = S.aiMd || $('sum').innerText.trim();
+  // 요약을 아직 안 만들었으면 안내문이 그대로 나가지 않도록 자동 요약을 먼저 생성
+  if(!S.aiMd && !S.autoMd && S.segs.length){
+    const r = autoSummary(); S.autoMd = r.md; $('sum').innerHTML = r.html;
+  }
+  // 화면 텍스트를 긁지 않고 마크다운을 직접 쓴다 (요약 카드가 숨겨져 있어도 형식 유지)
+  const sumTxt = S.aiMd || S.autoMd || '(요약 없음)';
   return '# '+($('title').value||'회의 녹음')+'\n\n'
     + '- 일시: '+today()+'\n- 길이: '+fmt(elapsed())+'\n- 문장 수: '+S.segs.length+'\n\n'
     + '## 요약\n\n'+sumTxt+'\n\n## 전체 전사\n\n'+plainTranscript()+'\n';
@@ -753,7 +806,7 @@ $('btnMd').onclick = ()=>dl(new Blob([buildMd()],{type:'text/markdown;charset=ut
 $('btnTxt').onclick = ()=>dl(new Blob([plainTranscript()],{type:'text/plain;charset=utf-8'}), fname('txt'));
 $('btnAudio').onclick = ()=>{ if(S.blob) dl(S.blob, fname((S.blob.type.includes('mp4')?'m4a':'webm'))); };
 $('btnCopyAll').onclick = ()=>{ navigator.clipboard.writeText(buildMd()); toast('회의록 전체를 복사했습니다'); };
-$('btnCopySum').onclick = ()=>{ navigator.clipboard.writeText(S.aiMd || $('sum').innerText); toast('요약을 복사했습니다'); };
+$('btnCopySum').onclick = ()=>{ navigator.clipboard.writeText(S.aiMd || S.autoMd || $('sum').innerText); toast('요약을 복사했습니다'); };
 
 /* ═══════════ 세션 저장 ═══════════ */
 const store = () => JSON.parse(localStorage.getItem('vn_sess')||'[]');
@@ -773,7 +826,7 @@ $('btnList').onclick = ()=>{
     d.innerHTML = '<div class="g"><b>'+esc(s.title)+'</b><small>'+s.date+' · '+s.dur+' · '+s.segs.length+'문장</small></div>'
       + '<button class="ghost" style="padding:4px 9px;font-size:12px">삭제</button>';
     d.querySelector('.g').onclick = ()=>{
-      S.segs = s.segs; S.acc = 0; S.aiMd = s.ai; $('title').value = s.title;
+      S.segs = s.segs; S.acc = 0; S.aiMd = s.ai; S.autoMd=''; S.curSeg = null; $('title').value = s.title;
       renderSegs(); if(s.ai) $('sum').innerHTML = mdToHtml(s.ai);
       $('maskList').classList.remove('on'); toast('불러왔습니다');
     };
@@ -790,12 +843,12 @@ $('listClose').onclick = ()=>$('maskList').classList.remove('on');
 /* ═══════════ 설정 ═══════════ */
 $('btnSet').onclick = ()=>{
   $('apiKey').value=CFG.key; $('model').value=CFG.model; $('prompt').value=CFG.prompt;
-  $('gap').value=CFG.gap; $('mode').value=CFG.mode;
+  $('maxLen').value=CFG.maxLen; $('mode').value=CFG.mode;
   $('maskSet').classList.add('on');
 };
 $('setSave').onclick = ()=>{
   CFG.key=$('apiKey').value.trim(); CFG.model=$('model').value;
-  CFG.prompt=$('prompt').value; CFG.gap=$('gap').value; CFG.mode=$('mode').value;
+  CFG.prompt=$('prompt').value; CFG.maxLen=$('maxLen').value; CFG.mode=$('mode').value;
   localStorage.setItem('vn_cfg', JSON.stringify(CFG));
   $('maskSet').classList.remove('on'); toast('설정을 저장했습니다');
 };
@@ -899,7 +952,10 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
   b.classList.add('on'); tab=b.dataset.tab;
   $('btnSum').textContent = tab==='ai' ? 'AI 요약 만들기' : '요약 만들기';
 });
-$('btnSum').onclick = ()=>{ if(tab==='ai') aiSummary(); else { S.aiMd=''; $('sum').innerHTML = autoSummary(); } };
+$('btnSum').onclick = ()=>{
+  if(tab==='ai'){ aiSummary(); return; }
+  const r = autoSummary(); S.aiMd=''; S.autoMd = r.md; $('sum').innerHTML = r.html;
+};
 $('btnRec').onclick = startRec;
 $('btnPause').onclick = pauseRec;
 $('btnStop').onclick = stopRec;
